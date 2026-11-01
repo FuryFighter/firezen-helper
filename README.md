@@ -22,7 +22,7 @@ After a Firefox update: first check that Zen and Firefox have matching engine ve
 3. Check the detected Zen and Firefox folders. You can select another detected installation from the lists, type a path, or click **Browse...**. Select installation folders containing `zen.exe` / `firefox.exe`, rather than profile folders.
 4. Close **all Firefox and Zen windows**, including background processes.
 5. **Keep Mozilla's Firefox engine (experimental)** is checked by default. This requires the original Mozilla engine; if Firefox was already transformed by the full-copy method, restore a pre-FireZEN backup or reinstall official Firefox first. See Engine modes below. Leave **Use borderless layout by default** checked to remove the outer content gap. Click **Check setup** if you changed any options, then **Apply FireZEN**. Windows may ask for administrator access and reopen the app; click Apply again in the reopened window. Review the destination and confirm.
-6. Wait for the success message in the window before reopening Firefox.
+6. Wait for the success message in the window before reopening Firefox normally. Apply queues a startup-cache refresh for detected profiles. If no initialized profile is detected, use **Copy Firefox launch**, press **Win+R**, paste and press Enter.
 
 To install or repair Sine and the FireZEN visual-fix mod, use **Sine Mods** in the helper. See the steps below. This can also be run separately without repeating the FireZEN file copy.
 
@@ -32,7 +32,7 @@ Requires Windows 10/11 with Windows PowerShell 5.1 and .NET Framework 4.8, norma
 
 The app checks that both browsers use the **same exact Firefox engine version and CPU architecture**. With **Keep Mozilla's Firefox engine (experimental)** selected, it copies Zen's `browser` folder contents and root `omni.ja`, leaving Firefox's `xul.dll` in place. With that option unchecked, it also copies Zen's `xul.dll`, following the upstream guide. Folder copying merges files, matching Windows Explorer's overwrite behavior. Firefox-only files are retained.
 
-The FireZEN copy leaves `firefox.exe`, the other root-level Firefox components, and browser profile data in place. It does not transfer bookmarks, passwords, cookies, extensions, preferences or history. The optional Sine installer separately changes Sine's loader, the selected profile's Sine/mod files and a startup-cache refresh flag. Like the underlying experimental FireZEN project, this helper cannot guarantee UI compatibility or DRM playback for every release/service.
+The FireZEN copy leaves `firefox.exe`, the other root-level Firefox components, and browser profile data in place. It does not transfer bookmarks, passwords, cookies, extensions, preferences or history. Apply and Restore request a startup-cache rebuild through detected profiles' `compatibility.ini` metadata. The optional Sine installer separately changes Sine's loader, the selected profile's Sine/mod files and the same startup-cache refresh flag. Like the underlying experimental FireZEN project, this helper cannot guarantee UI compatibility or DRM playback for every release/service.
 
 Before replacing files, the app stages the source and saves every destination file it will overwrite. SHA-256 checks verify the staged files, originals, replacements and restored files. If applying fails, it attempts to restore changed files automatically. It refuses linked folders, incompatible builds, or operations while either browser is running. It never forces a browser to close.
 
@@ -48,6 +48,18 @@ If your installed Firefox already contains Zen's `xul.dll`, close both browsers 
 
 Unchecking the option uses the original full-copy method. Existing five- and six-argument `Engine.Apply` calls and two-argument `Engine.Inspect` calls retain that legacy behavior. New launcher sessions default to keeping Mozilla's engine; `-KeepFirefoxEngine 0` selects the upstream method. The selected option is preserved through administrator relaunches.
 
+## Startup cache refresh
+
+Replacing interface archives without changing Firefox's build identity can leave cached interface code from the previous setup. This caused the installed browser's interface to break even though its engine and interface archives matched a working test copy. Starting that installation with `-purgecaches` resolved the reported failure.
+
+Apply and Restore now set `InvalidateCaches=1` under `[Compatibility]` in every detected, initialized Firefox profile that already has `compatibility.ini`. The helper uses registered profiles from Firefox's `profiles.ini`, plus a valid manually selected Sine profile, without creating a replacement profile. It preserves all other metadata keys and sections, including database-encryption metadata. Profiles without compatibility metadata already rebuild their caches on startup, so the helper leaves those files absent.
+
+The refresh request is written before replacing interface files. Restore queues it again, including for older backups; rollback re-arms it after restoring files. It is transient cache metadata and intentionally remains queued instead of restoring an obsolete pre-operation flag value. Firefox consumes the request on its next normal startup. No cookie, password, history, `prefs.js` or `user.js` file is changed for this refresh.
+
+**Copy Firefox launch** copies a command for the selected installation with `-purgecaches -no-remote`. Close all Firefox windows, press **Win+R**, paste and press Enter to request the same rebuild manually. The command uses that installation's normal default profile. Custom unregistered profiles require the corresponding `-profile` argument, or the Sine window's profile-specific launch command.
+
+The cache-aware core overloads accept explicit profile paths. Older core overloads keep their prior behavior and do not discover or edit profiles; callers using those APIs should request a cache refresh themselves. The Windows interface uses the cache-aware overloads automatically.
+
 ## Borderless layout
 
 **Use borderless layout by default** is checked on first launch. It adds `browser/defaults/preferences/firezen-helper-defaults.js` in Firefox with:
@@ -56,7 +68,7 @@ Unchecking the option uses the original full-copy method. Existing five- and six
 pref("zen.theme.content-element-separation", 0);
 ```
 
-This removes Zen's default 8-pixel outer content gap. Rounded-corner settings are unchanged. The file is included in the same backup, verification, rollback and restore operation as the copied browser files. No profile files are edited.
+This removes Zen's default 8-pixel outer content gap. Rounded-corner settings are unchanged. The file is included in the same backup, verification, rollback and restore operation as the copied browser files. The border option edits no profile preferences; setup separately requests a startup-cache rebuild through compatibility metadata.
 
 An explicit profile setting in `about:config` or `user.js` takes precedence over this default. If a frame remains, open `about:config`, search for `zen.theme.content-element-separation`, and set the number to **0**. Restart Firefox if necessary. The setting also controls spacing between some Zen UI elements.
 
@@ -95,7 +107,7 @@ See [Mozilla's update policy reference](https://firefox-admin-docs.mozilla.org/r
 
 The default backup folder is `%LOCALAPPDATA%\FireZenHelper\Backups`. You can choose a different folder outside both browser installations before applying. Allow roughly 1 GB of free space per operation for typical installations; the actual requirement is checked before copying. Backups include staged Zen files as well as the original Firefox files, so repeated operations use additional space.
 
-**Restore latest backup** selects the latest applied or interrupted backup for the chosen Firefox folder. Close both browsers first. Restore returns modified files, any borderless defaults file and any changed update policy to their saved state, removes files introduced by that operation, and retains unrelated files. Empty created directories can remain. The backup's `manifest.json` records its installation, checksums, status and interrupted-operation progress.
+**Restore latest backup** selects the latest applied or interrupted backup for the chosen Firefox folder. Close both browsers first. Restore returns modified installation files, any borderless defaults file and any changed update policy to their saved state, removes installation files introduced by that operation, and retains unrelated files. It also queues a fresh startup-cache rebuild in detected profiles. Empty created directories can remain. The backup's `manifest.json` records its installation, checksums, status and interrupted-operation progress.
 
 Restore is deliberately blocked if `firefox.exe` has changed since the backup, such as after a Firefox update: old engine files must not be mixed with a newer executable. A keep-engine backup also requires the retained `xul.dll` to match its saved fingerprint, and never restores that file. Restore later operations first if they changed the engine. Older helper backups remain readable. In the case of a Firefox update, reinstall standard Firefox rather than forcing old engine files into the updated installation.
 
@@ -118,4 +130,4 @@ This is an independent helper, not an official Mozilla, Zen or FireZEN release. 
 
 ## Development
 
-Use Windows PowerShell 5.1. Run `./Run-Tests.ps1` to compile the complete helper and exercise 48 temporary-folder checks. The test runner downloads the pinned official Sine packages into the ignored `work/` folder; no third-party JavaScript is executed by those fixture tests. See [TESTING.md](TESTING.md).
+Use Windows PowerShell 5.1. Run `./Run-Tests.ps1` to compile the complete helper and exercise 60 temporary-folder checks. The test runner downloads the pinned official Sine packages into the ignored `work/` folder; no third-party JavaScript is executed by those fixture tests. See [TESTING.md](TESTING.md).

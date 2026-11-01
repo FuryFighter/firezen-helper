@@ -1,5 +1,6 @@
 using System;
 using System.ComponentModel;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
@@ -156,6 +157,16 @@ namespace FireZenHelper
             actions.Controls.Add(check);
             actions.Controls.Add(apply);
             actions.Controls.Add(restore);
+            var copyLaunch = Button("Copy Firefox launch", false);
+            copyLaunch.Width = 165;
+            copyLaunch.Click += delegate {
+                try {
+                    Clipboard.SetText(FirefoxLaunchCommand(firefox.Text));
+                    MessageBox.Show(this, "Close Firefox, then press Win+R, paste the copied command, and press Enter to open Firefox with fresh interface caches.", "Firefox launch copied", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                catch (Exception e) { MessageBox.Show(this, e.Message, "Copy Firefox launch", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+            };
+            actions.Controls.Add(copyLaunch);
             AddWide(actions, SizeType.Absolute, 48);
             AddWide(new Label {
                 Text = "Close Firefox and Zen before applying. Windows may ask for administrator access.",
@@ -323,11 +334,20 @@ namespace FireZenHelper
             return "'" + text.Replace("'", "''") + "'";
         }
 
+        // Build without launching a process so all elevation handoffs can be checked safely.
+        private string RelaunchCommand(bool forSine, string profile, bool includeSineMod)
+        {
+            string command = "& " + QuotePS(script) + " -ZenPath " + QuotePS(zen.Text) + " -FirefoxPath " + QuotePS(firefox.Text) + " -BackupRoot " + QuotePS(backups.Text) + " -PauseUpdates " + (pause.Checked ? "1" : "0") + " -RemoveBorder " + (borderless.Checked ? "1" : "0") + " -KeepFirefoxEngine " + (keepEngine.Checked ? "1" : "0");
+            command += " -SineProfilePath " + QuotePS((forSine ? profile : sineProfile) ?? String.Empty)
+                + " -SineFireZen " + ((forSine ? includeSineMod : sineFireZen) ? "1" : "0");
+            if (forSine) command += " -OpenSineSetup";
+            return command;
+        }
+
         private bool ReadyToWrite(bool forSine = false, string profile = "", bool includeSineMod = true)
         {
             if (Admin()) return true;
-            string command = "& " + QuotePS(script) + " -ZenPath " + QuotePS(zen.Text) + " -FirefoxPath " + QuotePS(firefox.Text) + " -BackupRoot " + QuotePS(backups.Text) + " -PauseUpdates " + (pause.Checked ? "1" : "0") + " -RemoveBorder " + (borderless.Checked ? "1" : "0") + " -KeepFirefoxEngine " + (keepEngine.Checked ? "1" : "0");
-            if (forSine) command += " -OpenSineSetup -SineProfilePath " + QuotePS(profile) + " -SineFireZen " + (includeSineMod ? "1" : "0");
+            string command = RelaunchCommand(forSine, profile, includeSineMod);
             string encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(command));
             try
             {
@@ -347,6 +367,34 @@ namespace FireZenHelper
             return false;
         }
 
+        private string[] CacheProfiles(string target)
+        {
+            var profiles = new List<string>();
+            try { profiles.AddRange(SineInstaller.DetectProfiles(target)); }
+            catch (Exception e) { Append("Could not read registered Firefox profiles: " + e.Message + " Use Copy Firefox launch after the operation to refresh interface caches."); }
+            if (!String.IsNullOrWhiteSpace(sineProfile))
+            {
+                // A removed or inactive manual Sine choice must not prevent browser restore.
+                try { profiles.Add(SineInstaller.ValidateProfile(sineProfile)); }
+                catch (Exception) { }
+            }
+            return profiles.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        }
+
+        private static string FirefoxLaunchCommand(string folder)
+        {
+            string executable = Path.Combine(Engine.NormalizeFolder(folder), "firefox.exe");
+            if (!File.Exists(executable)) throw new FileNotFoundException("Choose the Firefox installation folder containing firefox.exe.");
+            return "\"" + executable + "\" -purgecaches -no-remote";
+        }
+
+        private static string CacheRefreshDescription(int profileCount)
+        {
+            return profileCount > 0
+                ? "Interface caches will refresh on the next normal Firefox start for " + profileCount + " detected or selected profile(s)."
+                : "No Firefox profiles were found. Afterward, use Copy Firefox launch to start Firefox with fresh interface caches.";
+        }
+
         private void ApplyClicked()
         {
             if (busy || !valid) return;
@@ -355,6 +403,7 @@ namespace FireZenHelper
             bool pauseUpdates = pause.Checked;
             bool removeBorder = borderless.Checked;
             bool keepFirefoxEngine = keepEngine.Checked;
+            string[] profilePaths = CacheProfiles(target);
             string description = (keepFirefoxEngine
                 ? "Experimental: copy Zen's browser folder and root omni.ja, keeping Mozilla's Firefox engine, into:\r\n"
                 : "Copy Zen's browser folder, xul.dll and root omni.ja into:\r\n") + target + "\r\n\r\nA verified backup will be saved in:\r\n" + backupRoot;
@@ -362,8 +411,9 @@ namespace FireZenHelper
             description += "\r\n\r\nSine Mods is a separate installation for your chosen Firefox profile.";
             if (pauseUpdates) description += "\r\n\r\nFirefox updates, including security updates, will be paused.";
             if (removeBorder) description += "\r\n\r\nThe outer content gap will default to 0 pixels. Explicit profile settings take precedence.";
+            description += "\r\n\r\n" + CacheRefreshDescription(profilePaths.Length);
             if (MessageBox.Show(this, description, "Apply FireZEN", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK) return;
-            RunOperation(delegate(Action<ProgressUpdate> callback) { return Engine.Apply(source, target, backupRoot, pauseUpdates, removeBorder, keepFirefoxEngine, callback); }, true);
+            RunOperation(delegate(Action<ProgressUpdate> callback) { return Engine.Apply(source, target, backupRoot, pauseUpdates, removeBorder, keepFirefoxEngine, profilePaths, callback); }, true, profilePaths.Length);
         }
 
         private void RestoreClicked()
@@ -375,13 +425,14 @@ namespace FireZenHelper
                 string backup = Engine.LatestBackup(backups.Text, target);
                 if (backup == null) { MessageBox.Show(this, "No applied backup was found for this Firefox installation in the selected backup folder.", "Restore backup"); return; }
                 if (!ReadyToWrite()) return;
-                if (MessageBox.Show(this, "Return the files changed by the latest operation to their saved state? This includes the update policy if that operation changed it.\r\n\r\n" + backup + "\r\n\r\nRestore is blocked if Firefox has since been updated.", "Restore latest backup", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK) return;
-                RunOperation(delegate(Action<ProgressUpdate> callback) { Engine.Restore(backup, target, callback); return backup; }, false);
+                string[] profilePaths = CacheProfiles(target);
+                if (MessageBox.Show(this, "Return the files changed by the latest operation to their saved state? This includes the update policy if that operation changed it.\r\n\r\n" + backup + "\r\n\r\nRestore is blocked if Firefox has since been updated.\r\n\r\n" + CacheRefreshDescription(profilePaths.Length), "Restore latest backup", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK) return;
+                RunOperation(delegate(Action<ProgressUpdate> callback) { Engine.Restore(backup, target, profilePaths, callback); return backup; }, false, profilePaths.Length);
             }
             catch (Exception e) { MessageBox.Show(this, e.Message, "Restore backup", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
         }
 
-        private void RunOperation(Func<Action<ProgressUpdate>, string> operation, bool applying)
+        private void RunOperation(Func<Action<ProgressUpdate>, string> operation, bool applying, int profileCount)
         {
             busy = true;
             valid = false;
@@ -411,9 +462,13 @@ namespace FireZenHelper
                 else
                 {
                     progress.Value = 100;
-                    status.Text = applying ? (keepEngine.Checked ? "FireZEN applied with Mozilla engine (experimental)." : "FireZEN applied with Zen engine.") : "Backup restored. You can open Firefox now.";
+                    status.Text = applying ? (keepEngine.Checked ? "FireZEN applied with Mozilla engine (experimental)." : "FireZEN applied with Zen engine.") : "Backup restored.";
+                    status.Text += profileCount > 0 ? " Open Firefox normally." : " Use Copy Firefox launch.";
                     status.ForeColor = accent;
                     Append("Backup: " + (string)e.Result);
+                    Append(profileCount > 0
+                        ? "Interface cache refresh queued. Close any running Firefox windows, then open Firefox normally."
+                        : "No profile cache refresh was queued. Close Firefox, use Copy Firefox launch, then press Win+R and paste the command.");
                     if (applying && keepEngine.Checked) Append("Mozilla engine retained. Open Firefox and test the features and protected video services you use; compatibility is experimental.");
                     if (applying && borderless.Checked) Append("Borderless default installed. If a profile still has a frame, set zen.theme.content-element-separation to 0 in about:config (a profile override wins over defaults).");
                     if (applying) Append("Use Sine Mods to install or repair Sine and the FireZEN visual-fix mod for your Firefox profile.");

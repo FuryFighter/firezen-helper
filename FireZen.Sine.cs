@@ -246,25 +246,7 @@ namespace FireZenHelper
 
         private static byte[] CacheInvalidationBytes(string profile)
         {
-            string path = Engine.Inside(profile, "compatibility.ini");
-            var result = new List<string>();
-            bool compatibility = false, foundSection = false, flag = false;
-            foreach (string line in File.Exists(path) ? File.ReadAllLines(path) : new string[0])
-            {
-                string trimmed = line.Trim();
-                if (trimmed.StartsWith("[") && trimmed.EndsWith("]"))
-                {
-                    if (compatibility && !flag) result.Add("InvalidateCaches=1");
-                    compatibility = trimmed.Equals("[Compatibility]", StringComparison.OrdinalIgnoreCase);
-                    if (compatibility) { foundSection = true; flag = false; }
-                }
-                if (compatibility && Regex.IsMatch(trimmed, @"^InvalidateCaches\s*=", RegexOptions.IgnoreCase))
-                { result.Add("InvalidateCaches=1"); flag = true; }
-                else result.Add(line);
-            }
-            if (compatibility && !flag) result.Add("InvalidateCaches=1");
-            if (!foundSection) { result.Add("[Compatibility]"); result.Add("InvalidateCaches=1"); }
-            return new UTF8Encoding(false).GetBytes(String.Join("\n", result) + "\n");
+            return Engine.CacheInvalidationBytes(profile);
         }
 
         private static string Resolve(SineBackup manifest, SineFileRecord record)

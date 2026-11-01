@@ -410,6 +410,73 @@ namespace FireZenHelper
             if (callback != null) callback(new ProgressUpdate { Stage = stage, Message = message, Percent = percent });
         }
 
+        // Transient startup-cache metadata, deliberately re-armed for each UI
+        // transition rather than restored to a stale pre-operation flag value.
+        public static byte[] CacheInvalidationBytes(string profile)
+        {
+            string path = Inside(profile, "compatibility.ini");
+            var result = new List<string>();
+            bool compatibility = false, foundSection = false, flag = false;
+            foreach (string line in File.Exists(path) ? File.ReadAllLines(path) : new string[0])
+            {
+                string trimmed = line.Trim();
+                if (trimmed.StartsWith("[") && trimmed.EndsWith("]"))
+                {
+                    if (compatibility && !flag) result.Add("InvalidateCaches=1");
+                    compatibility = trimmed.Equals("[Compatibility]", StringComparison.OrdinalIgnoreCase);
+                    if (compatibility) { foundSection = true; flag = false; }
+                }
+                if (compatibility && Regex.IsMatch(trimmed, @"^InvalidateCaches\s*=", RegexOptions.IgnoreCase))
+                {
+                    if (!flag) result.Add("InvalidateCaches=1");
+                    flag = true;
+                }
+                else result.Add(line);
+            }
+            if (compatibility && !flag) result.Add("InvalidateCaches=1");
+            if (!foundSection) { result.Add("[Compatibility]"); result.Add("InvalidateCaches=1"); }
+            return new UTF8Encoding(false).GetBytes(String.Join("\n", result) + "\n");
+        }
+
+        private static List<string> PrepareCacheProfiles(IEnumerable<string> profiles, params string[] excludedRoots)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string candidate in profiles ?? Enumerable.Empty<string>())
+            {
+                string profile = NormalizeFolder(candidate);
+                if (excludedRoots.Any(root => Overlaps(profile, root)))
+                    throw new IOException("Keep Firefox profile folders separate from browser installations and backups.");
+                string metadata = Inside(profile, "compatibility.ini");
+                if (Directory.Exists(metadata)) throw new IOException("A directory blocks profile compatibility.ini: " + profile);
+                if (File.Exists(metadata) || File.Exists(Inside(profile, "prefs.js"))) result.Add(profile);
+            }
+            return result.ToList();
+        }
+
+        private static void RefreshProfileCaches(IEnumerable<string> profiles, Action<ProgressUpdate> progress, int percent)
+        {
+            var updates = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+            var originals = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            // Read all metadata first: a locked or invalid profile must not leave
+            // the interface halfway replaced. Missing metadata already forces a rebuild.
+            foreach (string profile in profiles)
+            {
+                string path = Inside(profile, "compatibility.ini");
+                if (!File.Exists(path)) continue;
+                originals[path] = HashFile(path);
+                updates[path] = CacheInvalidationBytes(profile);
+            }
+            foreach (var update in updates)
+            {
+                if (HashFile(update.Key) != originals[update.Key])
+                    throw new IOException("Firefox profile metadata changed while preparing the startup cache refresh.");
+                string expected = HashBytes(update.Value);
+                if (expected != originals[update.Key]) AtomicBytes(update.Key, update.Value);
+                if (HashFile(update.Key) != expected) throw new IOException("Startup cache refresh could not be verified.");
+                Report(progress, "CacheRefresh", "Startup cache refresh queued for " + System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(update.Key)) + ".", percent);
+            }
+        }
+
         internal static Mutex OperationLock()
         {
             var mutex = new Mutex(false, @"Global\FireZenHelper.FileOperation.v1");
@@ -435,12 +502,17 @@ namespace FireZenHelper
 
         public static string Apply(string zenPath, string firefoxPath, string backupRoot, bool pauseUpdates, bool borderless, bool keepFirefoxEngine, Action<ProgressUpdate> progress)
         {
+            return Apply(zenPath, firefoxPath, backupRoot, pauseUpdates, borderless, keepFirefoxEngine, null, progress);
+        }
+
+        public static string Apply(string zenPath, string firefoxPath, string backupRoot, bool pauseUpdates, bool borderless, bool keepFirefoxEngine, IEnumerable<string> profilePaths, Action<ProgressUpdate> progress)
+        {
             using (Mutex operation = OperationLock())
-            try { return ApplyLocked(zenPath, firefoxPath, backupRoot, pauseUpdates, borderless, keepFirefoxEngine, progress); }
+            try { return ApplyLocked(zenPath, firefoxPath, backupRoot, pauseUpdates, borderless, keepFirefoxEngine, profilePaths, progress); }
             finally { operation.ReleaseMutex(); }
         }
 
-        private static string ApplyLocked(string zenPath, string firefoxPath, string backupRoot, bool pauseUpdates, bool borderless, bool keepFirefoxEngine, Action<ProgressUpdate> progress)
+        private static string ApplyLocked(string zenPath, string firefoxPath, string backupRoot, bool pauseUpdates, bool borderless, bool keepFirefoxEngine, IEnumerable<string> profilePaths, Action<ProgressUpdate> progress)
         {
             BrowserPair pair = Inspect(zenPath, firefoxPath, keepFirefoxEngine);
             EnsureClosed();
@@ -448,6 +520,7 @@ namespace FireZenHelper
             CheckPath(backupRoot);
             if (Overlaps(backupRoot, pair.Zen.Path) || Overlaps(backupRoot, pair.Firefox.Path))
                 throw new IOException("Keep the backup folder outside both browser installations.");
+            List<string> cacheProfiles = PrepareCacheProfiles(profilePaths, pair.Zen.Path, pair.Firefox.Path, backupRoot);
             List<string> sourceFiles = SourceFiles(pair.Zen.Path, keepFirefoxEngine);
             var files = new List<string>(sourceFiles);
             var generated = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
@@ -521,6 +594,7 @@ namespace FireZenHelper
                     if (File.Exists(target) != record.Existed || (record.Existed && HashFile(target) != record.OriginalHash))
                         throw new IOException("Firefox changed during backup. Try again with both browsers closed.");
                 }
+                RefreshProfileCaches(cacheProfiles, progress, 45);
                 manifest.Status = "Applying";
                 SaveManifest(backup, manifest);
                 for (int i = 0; i < manifest.Files.Count; i++)
@@ -542,7 +616,11 @@ namespace FireZenHelper
             {
                 try
                 {
-                    if (manifest.TouchedCount > 0) RestoreFiles(backup, manifest, null);
+                    if (manifest.TouchedCount > 0)
+                    {
+                        RestoreFiles(backup, manifest, null);
+                        RefreshProfileCaches(cacheProfiles, null, 0);
+                    }
                     manifest.Status = "RolledBack";
                     SaveManifest(backup, manifest);
                 }
@@ -609,6 +687,11 @@ namespace FireZenHelper
 
         public static void Restore(string backup, string firefox, Action<ProgressUpdate> progress)
         {
+            Restore(backup, firefox, null, progress);
+        }
+
+        public static void Restore(string backup, string firefox, IEnumerable<string> profilePaths, Action<ProgressUpdate> progress)
+        {
             using (Mutex operation = OperationLock())
             try
             {
@@ -616,8 +699,10 @@ namespace FireZenHelper
                 BackupManifest manifest = LoadManifest(backup, firefox);
                 if (!(manifest.Status == "Applied" || manifest.Status == "Applying" || manifest.Status == "RecoveryRequired"))
                     throw new IOException("This backup has already been restored or was never applied.");
+                List<string> cacheProfiles = PrepareCacheProfiles(profilePaths, manifest.FirefoxPath, System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(backup)));
                 try
                 {
+                    RefreshProfileCaches(cacheProfiles, progress, 0);
                     RestoreFiles(backup, manifest, progress);
                     manifest.Status = "Restored";
                     SaveManifest(backup, manifest);
