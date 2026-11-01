@@ -1,0 +1,13 @@
+/work/
+/outputs/
+/backups/
+/.vs/
+*.user
+*.suo
+*.tmp
+*.log
+*.zip
+*.dll
+*.exe
+Thumbs.db
+Desktop.ini
