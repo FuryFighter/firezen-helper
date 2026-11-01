@@ -20,6 +20,8 @@ Write-Output 'PASS Official test packages match pinned SHA-256 fingerprints'
 $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 & $powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'tests\Test-Borderless.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Browser/borderless fixture tests failed.' }
+& $powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'tests\Test-EngineModes.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Engine-mode fixture tests failed.' }
 & $powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'tests\Test-Sine.ps1') -PackageDirectory $PackageDirectory
 if ($LASTEXITCODE -ne 0) { throw 'Sine fixture tests failed.' }
-Write-Output 'SUCCESS: full compilation, verified packages, and all 36 fixture tests passed.'
+Write-Output 'SUCCESS: full compilation, verified packages, and all 48 fixture tests passed.'

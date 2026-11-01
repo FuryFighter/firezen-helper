@@ -16,7 +16,8 @@ namespace FireZenHelper
         private readonly ComboBox zen = new ComboBox(), firefox = new ComboBox();
         private readonly TextBox backups = new TextBox(), log = new TextBox();
         private readonly Label zenInfo = new Label(), firefoxInfo = new Label(), status = new Label();
-        private readonly CheckBox pause = new CheckBox(), borderless = new CheckBox();
+        private readonly CheckBox pause = new CheckBox(), borderless = new CheckBox(), keepEngine = new CheckBox();
+        private readonly Label copyInfo = new Label();
         private readonly ProgressBar progress = new ProgressBar();
         private readonly Button check = new Button(), apply = new Button(), restore = new Button();
         private readonly Color ink = Color.FromArgb(29, 52, 61), accent = Color.FromArgb(17, 104, 107);
@@ -26,7 +27,7 @@ namespace FireZenHelper
         private readonly FlowLayoutPanel actions = new FlowLayoutPanel();
         private readonly TableLayoutPanel layout = new TableLayoutPanel();
 
-        public MainForm(string scriptPath, string zenPath, string firefoxPath, string backupRoot, bool pauseUpdates, bool removeBorder, string profilePath, bool includeSineMod, bool openSineSetup)
+        public MainForm(string scriptPath, string zenPath, string firefoxPath, string backupRoot, bool pauseUpdates, bool removeBorder, bool keepFirefoxEngine, string profilePath, bool includeSineMod, bool openSineSetup)
         {
             script = scriptPath;
             sineProfile = profilePath;
@@ -60,10 +61,24 @@ namespace FireZenHelper
             guide.Click += delegate { ShowSine(); };
             int utilityRow = layout.RowCount++;
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
-            var what = new Label { Text = "Copies browser\\, xul.dll and omni.ja from Zen.", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = new Font("Segoe UI", 9F), Margin = new Padding(0, 0, 8, 0) };
-            layout.Controls.Add(what, 0, utilityRow);
+            copyInfo.Dock = DockStyle.Fill;
+            copyInfo.TextAlign = ContentAlignment.MiddleLeft;
+            copyInfo.Font = new Font("Segoe UI", 9F);
+            copyInfo.Margin = new Padding(0, 0, 8, 0);
+            layout.Controls.Add(copyInfo, 0, utilityRow);
             layout.Controls.Add(detect, 1, utilityRow);
             layout.Controls.Add(guide, 2, utilityRow);
+
+            keepEngine.Text = "Keep Mozilla's Firefox engine (experimental)";
+            keepEngine.Checked = keepFirefoxEngine;
+            keepEngine.AutoSize = true;
+            keepEngine.Margin = new Padding(0, 2, 0, 3);
+            AddWide(keepEngine, SizeType.AutoSize, 0);
+            AddWide(new Label {
+                Text = "Keeps Firefox's xul.dll. Some Zen features may fail; protected video playback is not guaranteed.\r\nRequires an original Mozilla engine. Sine Mods is installed separately for your chosen profile.",
+                AutoSize = true, Font = new Font("Segoe UI", 9F), ForeColor = Color.FromArgb(75, 96, 103), Margin = new Padding(21, 0, 0, 2)
+            }, SizeType.AutoSize, 0);
+            UpdateCopyInfo();
 
             borderless.Text = "Use borderless layout by default";
             borderless.Checked = removeBorder;
@@ -155,12 +170,13 @@ namespace FireZenHelper
             backups.TextChanged += delegate { InvalidateSetup(); };
             pause.CheckedChanged += delegate { InvalidateSetup(); };
             borderless.CheckedChanged += delegate { InvalidateSetup(); };
+            keepEngine.CheckedChanged += delegate { UpdateCopyInfo(); InvalidateSetup(); };
             FormClosing += delegate(object sender, FormClosingEventArgs e) {
                 if (busy) { e.Cancel = true; MessageBox.Show(this, "Wait for the current operation to finish before closing.", "Operation in progress"); }
             };
             DetectFolders(false);
-            if (!String.IsNullOrWhiteSpace(zenPath)) zen.Text = zenPath;
-            if (!String.IsNullOrWhiteSpace(firefoxPath)) firefox.Text = firefoxPath;
+            if (!String.IsNullOrWhiteSpace(zenPath)) { zen.SelectedIndex = -1; zen.Text = zenPath; }
+            if (!String.IsNullOrWhiteSpace(firefoxPath)) { firefox.SelectedIndex = -1; firefox.Text = firefoxPath; }
             apply.Enabled = false;
             Append("Ready. Browser folders were detected automatically where possible.");
             Append("A verified backup is made before Firefox files are changed. Sine Mods has a separate installer and backup for its chosen profile.");
@@ -249,6 +265,13 @@ namespace FireZenHelper
             catch { label.Text = "Choose the installation folder, or paste its full path."; }
         }
 
+        private void UpdateCopyInfo()
+        {
+            copyInfo.Text = keepEngine.Checked
+                ? "Copies Zen's browser folder and root omni.ja."
+                : "Copies Zen's browser folder, xul.dll and root omni.ja.";
+        }
+
         private void InvalidateSetup()
         {
             valid = false;
@@ -267,14 +290,14 @@ namespace FireZenHelper
             if (busy) return;
             try
             {
-                BrowserPair pair = Engine.Inspect(zen.Text, firefox.Text);
+                BrowserPair pair = Engine.Inspect(zen.Text, firefox.Text, keepEngine.Checked);
                 zen.Text = pair.Zen.Path;
                 firefox.Text = pair.Firefox.Path;
                 if (String.IsNullOrWhiteSpace(backups.Text)) throw new IOException("Choose a backup folder.");
                 Path.GetFullPath(backups.Text);
                 valid = true;
                 apply.Enabled = true;
-                status.Text = "Versions match: Firefox " + pair.Firefox.Engine + " / " + pair.Firefox.Architecture;
+                status.Text = (keepEngine.Checked ? "Ready: keep Mozilla engine (experimental). Firefox " : "Ready: copy Zen engine. Firefox ") + pair.Firefox.Engine + " / " + pair.Firefox.Architecture;
                 status.ForeColor = accent;
                 Append("Setup checked: " + pair.FileCount + " files, " + Math.Ceiling(pair.SourceBytes / 1048576D) + " MB to copy. A backup will also need disk space.");
             }
@@ -303,7 +326,7 @@ namespace FireZenHelper
         private bool ReadyToWrite(bool forSine = false, string profile = "", bool includeSineMod = true)
         {
             if (Admin()) return true;
-            string command = "& " + QuotePS(script) + " -ZenPath " + QuotePS(zen.Text) + " -FirefoxPath " + QuotePS(firefox.Text) + " -BackupRoot " + QuotePS(backups.Text) + " -PauseUpdates " + (pause.Checked ? "1" : "0") + " -RemoveBorder " + (borderless.Checked ? "1" : "0");
+            string command = "& " + QuotePS(script) + " -ZenPath " + QuotePS(zen.Text) + " -FirefoxPath " + QuotePS(firefox.Text) + " -BackupRoot " + QuotePS(backups.Text) + " -PauseUpdates " + (pause.Checked ? "1" : "0") + " -RemoveBorder " + (borderless.Checked ? "1" : "0") + " -KeepFirefoxEngine " + (keepEngine.Checked ? "1" : "0");
             if (forSine) command += " -OpenSineSetup -SineProfilePath " + QuotePS(profile) + " -SineFireZen " + (includeSineMod ? "1" : "0");
             string encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(command));
             try
@@ -331,11 +354,16 @@ namespace FireZenHelper
             string source = zen.Text, target = firefox.Text, backupRoot = backups.Text;
             bool pauseUpdates = pause.Checked;
             bool removeBorder = borderless.Checked;
-            string description = "Copy Zen's browser folder, xul.dll and omni.ja into:\r\n" + target + "\r\n\r\nA verified backup will be saved in:\r\n" + backupRoot;
+            bool keepFirefoxEngine = keepEngine.Checked;
+            string description = (keepFirefoxEngine
+                ? "Experimental: copy Zen's browser folder and root omni.ja, keeping Mozilla's Firefox engine, into:\r\n"
+                : "Copy Zen's browser folder, xul.dll and root omni.ja into:\r\n") + target + "\r\n\r\nA verified backup will be saved in:\r\n" + backupRoot;
+            if (keepFirefoxEngine) description += "\r\n\r\nSome Zen features may fail. Protected video playback is not guaranteed.";
+            description += "\r\n\r\nSine Mods is a separate installation for your chosen Firefox profile.";
             if (pauseUpdates) description += "\r\n\r\nFirefox updates, including security updates, will be paused.";
             if (removeBorder) description += "\r\n\r\nThe outer content gap will default to 0 pixels. Explicit profile settings take precedence.";
             if (MessageBox.Show(this, description, "Apply FireZEN", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK) return;
-            RunOperation(delegate(Action<ProgressUpdate> callback) { return Engine.Apply(source, target, backupRoot, pauseUpdates, removeBorder, callback); }, true);
+            RunOperation(delegate(Action<ProgressUpdate> callback) { return Engine.Apply(source, target, backupRoot, pauseUpdates, removeBorder, keepFirefoxEngine, callback); }, true);
         }
 
         private void RestoreClicked()
@@ -359,7 +387,7 @@ namespace FireZenHelper
             valid = false;
             SetInputs(false);
             progress.Value = 0;
-            status.Text = applying ? "Backing up, then applying FireZEN..." : "Restoring the latest backup...";
+            status.Text = applying ? (keepEngine.Checked ? "Backing up, then applying FireZEN with Mozilla engine..." : "Backing up, then applying FireZEN with Zen engine...") : "Restoring the latest backup...";
             var worker = new BackgroundWorker { WorkerReportsProgress = true };
             worker.DoWork += delegate(object sender, DoWorkEventArgs e) {
                 e.Result = operation(delegate(ProgressUpdate update) { worker.ReportProgress(update.Percent, update); });
@@ -383,9 +411,10 @@ namespace FireZenHelper
                 else
                 {
                     progress.Value = 100;
-                    status.Text = applying ? "FireZEN applied. You can open Firefox now." : "Backup restored. You can open Firefox now.";
+                    status.Text = applying ? (keepEngine.Checked ? "FireZEN applied with Mozilla engine (experimental)." : "FireZEN applied with Zen engine.") : "Backup restored. You can open Firefox now.";
                     status.ForeColor = accent;
                     Append("Backup: " + (string)e.Result);
+                    if (applying && keepEngine.Checked) Append("Mozilla engine retained. Open Firefox and test the features and protected video services you use; compatibility is experimental.");
                     if (applying && borderless.Checked) Append("Borderless default installed. If a profile still has a frame, set zen.theme.content-element-separation to 0 in about:config (a profile override wins over defaults).");
                     if (applying) Append("Use Sine Mods to install or repair Sine and the FireZEN visual-fix mod for your Firefox profile.");
                 }

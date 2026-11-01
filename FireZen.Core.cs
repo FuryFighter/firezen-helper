@@ -28,6 +28,7 @@ namespace FireZenHelper
         public BrowserInfo Firefox { get; set; }
         public int FileCount { get; set; }
         public long SourceBytes { get; set; }
+        public string PreservedEngineHash { get; set; }
     }
 
     public sealed class ProgressUpdate
@@ -55,6 +56,8 @@ namespace FireZenHelper
         public string Engine { get; set; }
         public bool PausedUpdates { get; set; }
         public bool BorderlessDefault { get; set; }
+        public bool KeepFirefoxEngine { get; set; }
+        public string PreservedEngineHash { get; set; }
         public int TouchedCount { get; set; }
         public List<FileRecord> Files { get; set; }
     }
@@ -176,11 +179,12 @@ namespace FireZenHelper
             return new BrowserInfo { Path = path, Version = IniValue(app, "App", "Version") ?? "unknown", Engine = NormalVersion(milestone), Architecture = Architecture(exe) };
         }
 
-        private static List<string> SourceFiles(string root)
+        private static List<string> SourceFiles(string root, bool keepFirefoxEngine = false)
         {
             var result = new List<string>();
             foreach (string item in Roots)
             {
+                if (keepFirefoxEngine && item == "xul.dll") continue;
                 string path = Inside(root, item);
                 if (item == "browser")
                 {
@@ -208,7 +212,45 @@ namespace FireZenHelper
             foreach (string child in Directory.GetDirectories(folder)) Walk(root, child, result);
         }
 
+        private static void RequireMozillaEngine(string firefoxPath, string expectedEngine)
+        {
+            string executable = Inside(firefoxPath, "firefox.exe"), engine = Inside(firefoxPath, "xul.dll");
+            string guidance = "Keep Firefox engine requires original, valid Mozilla-signed Firefox files. Restore a backup made before FireZEN, or reinstall official Firefox, then check the setup again. A recent backup of an already-modified installation may still contain Zen's engine.";
+            if (!File.Exists(engine)) throw new InvalidOperationException(guidance);
+            if (NormalVersion(FileVersionInfo.GetVersionInfo(engine).FileVersion) != expectedEngine ||
+                NormalVersion(FileVersionInfo.GetVersionInfo(executable).FileVersion) != expectedEngine || Architecture(engine) != Architecture(executable))
+                throw new InvalidOperationException("Firefox's engine does not match its installation version or architecture. " + guidance);
+            string executableHash = HashFile(executable), engineHash = HashFile(engine);
+            // Use Windows PowerShell's Authenticode verifier, including trust and timestamp
+            // validation. Reading a certificate alone would not validate the file signature.
+            string command = "$ErrorActionPreference='Stop';try { foreach($file in @('" + executable.Replace("'", "''") + "','" + engine.Replace("'", "''") +
+                "')) { $signature=Get-AuthenticodeSignature -LiteralPath $file; if($signature.Status -ne 'Valid' -or " +
+                "$signature.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName,$false) -ne 'Mozilla Corporation') { exit 3 } }; exit 0 } catch { exit 2 }";
+            var start = new ProcessStartInfo {
+                FileName = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe"),
+                Arguments = "-NoLogo -NoProfile -NonInteractive -EncodedCommand " + Convert.ToBase64String(Encoding.Unicode.GetBytes(command)),
+                UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden
+            };
+            using (Process verifier = Process.Start(start))
+            {
+                if (verifier == null) throw new IOException("Could not start the Windows signature verifier.");
+                if (!verifier.WaitForExit(30000))
+                {
+                    try { verifier.Kill(); } catch (InvalidOperationException) { }
+                    throw new IOException("Windows signature verification timed out. No browser files were changed; try Check setup again.");
+                }
+                if (verifier.ExitCode != 0) throw new InvalidOperationException(guidance);
+            }
+            if (HashFile(executable) != executableHash || HashFile(engine) != engineHash)
+                throw new IOException("Firefox changed during signature verification. Check the setup again.");
+        }
+
         public static BrowserPair Inspect(string zenPath, string firefoxPath)
+        {
+            return Inspect(zenPath, firefoxPath, false);
+        }
+
+        public static BrowserPair Inspect(string zenPath, string firefoxPath, bool keepFirefoxEngine)
         {
             BrowserInfo zen = ReadBrowser(zenPath, true), firefox = ReadBrowser(firefoxPath, false);
             if (Overlaps(zen.Path, firefox.Path)) throw new InvalidOperationException("Zen and Firefox must have separate installation folders.");
@@ -216,13 +258,22 @@ namespace FireZenHelper
                 throw new InvalidOperationException("Version mismatch: Zen uses Firefox " + zen.Engine + ", but Firefox is " + firefox.Engine + ". Install matching versions before applying FireZEN.");
             if (zen.Architecture != firefox.Architecture)
                 throw new InvalidOperationException("Architecture mismatch: Zen is " + zen.Architecture + " and Firefox is " + firefox.Architecture + ". Install matching editions.");
-            List<string> files = SourceFiles(zen.Path);
+            string preservedHash = null;
+            if (keepFirefoxEngine)
+            {
+                string engine = Inside(firefox.Path, "xul.dll");
+                if (!File.Exists(engine)) throw new InvalidOperationException("Firefox's original engine is missing. Reinstall official Firefox before using Keep Firefox engine.");
+                preservedHash = HashFile(engine);
+                RequireMozillaEngine(firefox.Path, firefox.Engine);
+                if (HashFile(engine) != preservedHash) throw new IOException("Firefox's engine changed while checking setup. Try again.");
+            }
+            List<string> files = SourceFiles(zen.Path, keepFirefoxEngine);
             foreach (string file in files)
             {
                 string destination = Inside(firefox.Path, file);
                 if (Directory.Exists(destination)) throw new IOException("A folder blocks this file: " + destination);
             }
-            return new BrowserPair { Zen = zen, Firefox = firefox, FileCount = files.Count, SourceBytes = files.Sum(f => new FileInfo(Inside(zen.Path, f)).Length) };
+            return new BrowserPair { Zen = zen, Firefox = firefox, FileCount = files.Count, SourceBytes = files.Sum(f => new FileInfo(Inside(zen.Path, f)).Length), PreservedEngineHash = preservedHash };
         }
 
         public static List<string> Detect(bool zen)
@@ -379,20 +430,25 @@ namespace FireZenHelper
 
         public static string Apply(string zenPath, string firefoxPath, string backupRoot, bool pauseUpdates, bool borderless, Action<ProgressUpdate> progress)
         {
+            return Apply(zenPath, firefoxPath, backupRoot, pauseUpdates, borderless, false, progress);
+        }
+
+        public static string Apply(string zenPath, string firefoxPath, string backupRoot, bool pauseUpdates, bool borderless, bool keepFirefoxEngine, Action<ProgressUpdate> progress)
+        {
             using (Mutex operation = OperationLock())
-            try { return ApplyLocked(zenPath, firefoxPath, backupRoot, pauseUpdates, borderless, progress); }
+            try { return ApplyLocked(zenPath, firefoxPath, backupRoot, pauseUpdates, borderless, keepFirefoxEngine, progress); }
             finally { operation.ReleaseMutex(); }
         }
 
-        private static string ApplyLocked(string zenPath, string firefoxPath, string backupRoot, bool pauseUpdates, bool borderless, Action<ProgressUpdate> progress)
+        private static string ApplyLocked(string zenPath, string firefoxPath, string backupRoot, bool pauseUpdates, bool borderless, bool keepFirefoxEngine, Action<ProgressUpdate> progress)
         {
-            BrowserPair pair = Inspect(zenPath, firefoxPath);
+            BrowserPair pair = Inspect(zenPath, firefoxPath, keepFirefoxEngine);
             EnsureClosed();
             backupRoot = System.IO.Path.GetFullPath(backupRoot);
             CheckPath(backupRoot);
             if (Overlaps(backupRoot, pair.Zen.Path) || Overlaps(backupRoot, pair.Firefox.Path))
                 throw new IOException("Keep the backup folder outside both browser installations.");
-            List<string> sourceFiles = SourceFiles(pair.Zen.Path);
+            List<string> sourceFiles = SourceFiles(pair.Zen.Path, keepFirefoxEngine);
             var files = new List<string>(sourceFiles);
             var generated = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
             if (pauseUpdates) generated[@"distribution\policies.json"] = PolicyBytes(pair.Firefox.Path);
@@ -419,7 +475,8 @@ namespace FireZenHelper
             {
                 Format = 1, CreatedUtc = DateTime.UtcNow.ToString("o"), Status = "Preparing",
                 FirefoxPath = pair.Firefox.Path, FirefoxExeHash = HashFile(Inside(pair.Firefox.Path, "firefox.exe")),
-                Engine = pair.Firefox.Engine, PausedUpdates = pauseUpdates, BorderlessDefault = borderless, Files = new List<FileRecord>()
+                Engine = pair.Firefox.Engine, PausedUpdates = pauseUpdates, BorderlessDefault = borderless,
+                KeepFirefoxEngine = keepFirefoxEngine, PreservedEngineHash = pair.PreservedEngineHash, Files = new List<FileRecord>()
             };
             string zenExeHash = HashFile(Inside(pair.Zen.Path, "zen.exe"));
             string zenPlatformHash = HashFile(Inside(pair.Zen.Path, "platform.ini"));
@@ -449,13 +506,15 @@ namespace FireZenHelper
                 SaveManifest(backup, manifest);
                 EnsureClosed();
                 if (HashFile(Inside(pair.Zen.Path, "zen.exe")) != zenExeHash || HashFile(Inside(pair.Zen.Path, "platform.ini")) != zenPlatformHash ||
-                    !SourceFiles(pair.Zen.Path).SequenceEqual(sourceFiles, StringComparer.OrdinalIgnoreCase))
+                    !SourceFiles(pair.Zen.Path, keepFirefoxEngine).SequenceEqual(sourceFiles, StringComparer.OrdinalIgnoreCase))
                     throw new IOException("Zen changed during backup. Check the versions again before applying.");
                 foreach (FileRecord record in manifest.Files.Where(f => !generated.ContainsKey(f.RelativePath)))
                     if (HashFile(Inside(pair.Zen.Path, record.RelativePath)) != record.AppliedHash)
                         throw new IOException("Zen changed during backup. Try again with both browsers closed.");
                 if (HashFile(Inside(pair.Firefox.Path, "firefox.exe")) != manifest.FirefoxExeHash)
                     throw new IOException("Firefox updated while the backup was being made. Check the versions again.");
+                if (keepFirefoxEngine && HashFile(Inside(pair.Firefox.Path, "xul.dll")) != manifest.PreservedEngineHash)
+                    throw new IOException("Firefox's preserved engine changed during backup. No interface files were applied.");
                 foreach (FileRecord record in manifest.Files)
                 {
                     string target = Inside(pair.Firefox.Path, record.RelativePath);
@@ -521,6 +580,10 @@ namespace FireZenHelper
             }
             if (HashFile(Inside(firefox, "firefox.exe")) != manifest.FirefoxExeHash)
                 throw new IOException("Firefox has been updated or replaced since this backup. Restoring old engine files would mix versions. Use a matching Firefox installation instead.");
+            if (manifest.KeepFirefoxEngine && (String.IsNullOrEmpty(manifest.PreservedEngineHash) ||
+                manifest.Files.Any(f => f.RelativePath.Equals("xul.dll", StringComparison.OrdinalIgnoreCase)) ||
+                HashFile(Inside(firefox, "xul.dll")) != manifest.PreservedEngineHash))
+                throw new IOException("Firefox's preserved engine changed since this backup, or its engine metadata is invalid. Restore later operations first or reinstall matching official Firefox files.");
             return manifest;
         }
 

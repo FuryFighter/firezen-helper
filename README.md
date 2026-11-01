@@ -1,6 +1,6 @@
 # FireZEN Helper for Windows
 
-Reapply Zen's interface to an existing Firefox installation using the file-copy method in [CosmoCreeper's FireZEN guide](https://github.com/CosmoCreeper/FireZen#installation).
+Reapply Zen's interface to an existing Firefox installation. The helper includes the file-copy method in [CosmoCreeper's FireZEN guide](https://github.com/CosmoCreeper/FireZen#installation) and an experimental option that retains Mozilla's original engine.
 
 ## Which button should I use?
 
@@ -8,10 +8,10 @@ Reapply Zen's interface to an existing Firefox installation using the file-copy 
 
 | Action | What it does |
 | --- | --- |
-| **Apply FireZEN** | Copies Zen's browser files into Firefox and applies the selected borderless/update options. |
+| **Apply FireZEN** | Copies Zen's interface files into Firefox using the selected engine mode, and applies the selected borderless/update options. |
 | **Sine Mods > Install / repair Sine** | Installs or repairs Sine in the selected Firefox profile, and optionally installs the FireZEN visual-fix mod. |
 
-For a fresh setup: close both browsers, apply FireZEN, open Sine Mods, select your Firefox profile, install Sine with the FireZEN mod option enabled, and restart Firefox. You can complete both operations before reopening the browser.
+For a fresh setup: close both browsers, choose the engine option, apply FireZEN, then optionally open Sine Mods to install Sine and the FireZEN visual-fix mod in your chosen profile. You can complete both operations before reopening the browser. Sine installation is independent of the engine choice.
 
 After a Firefox update: first check that Zen and Firefox have matching engine versions, then reapply FireZEN. If Sine and the FireZEN mod still work, there is no need to reinstall them. Use Sine Mods to repair Sine when its settings tab or mods have stopped loading.
 
@@ -21,7 +21,7 @@ After a Firefox update: first check that Zen and Firefox have matching engine ve
 2. Double-click **Run FireZEN.cmd**.
 3. Check the detected Zen and Firefox folders. You can select another detected installation from the lists, type a path, or click **Browse...**. Select installation folders containing `zen.exe` / `firefox.exe`, rather than profile folders.
 4. Close **all Firefox and Zen windows**, including background processes.
-5. Leave **Use borderless layout by default** checked to remove the outer content gap. Click **Check setup** if you changed any options, then **Apply FireZEN**. Windows may ask for administrator access and reopen the app; click Apply again in the reopened window. Review the destination and confirm.
+5. **Keep Mozilla's Firefox engine (experimental)** is checked by default. This requires the original Mozilla engine; if Firefox was already transformed by the full-copy method, restore a pre-FireZEN backup or reinstall official Firefox first. See Engine modes below. Leave **Use borderless layout by default** checked to remove the outer content gap. Click **Check setup** if you changed any options, then **Apply FireZEN**. Windows may ask for administrator access and reopen the app; click Apply again in the reopened window. Review the destination and confirm.
 6. Wait for the success message in the window before reopening Firefox.
 
 To install or repair Sine and the FireZEN visual-fix mod, use **Sine Mods** in the helper. See the steps below. This can also be run separately without repeating the FireZEN file copy.
@@ -30,11 +30,23 @@ Requires Windows 10/11 with Windows PowerShell 5.1 and .NET Framework 4.8, norma
 
 ## What it changes
 
-The app checks that both browsers use the **same exact Firefox engine version and CPU architecture**, then copies Zen's `browser` folder contents, `xul.dll` and `omni.ja` into Firefox. Folder copying merges files, matching Windows Explorer's overwrite behavior. Firefox-only files are retained.
+The app checks that both browsers use the **same exact Firefox engine version and CPU architecture**. With **Keep Mozilla's Firefox engine (experimental)** selected, it copies Zen's `browser` folder contents and root `omni.ja`, leaving Firefox's `xul.dll` in place. With that option unchecked, it also copies Zen's `xul.dll`, following the upstream guide. Folder copying merges files, matching Windows Explorer's overwrite behavior. Firefox-only files are retained.
 
 The FireZEN copy leaves `firefox.exe`, the other root-level Firefox components, and browser profile data in place. It does not transfer bookmarks, passwords, cookies, extensions, preferences or history. The optional Sine installer separately changes Sine's loader, the selected profile's Sine/mod files and a startup-cache refresh flag. Like the underlying experimental FireZEN project, this helper cannot guarantee UI compatibility or DRM playback for every release/service.
 
 Before replacing files, the app stages the source and saves every destination file it will overwrite. SHA-256 checks verify the staged files, originals, replacements and restored files. If applying fails, it attempts to restore changed files automatically. It refuses linked folders, incompatible builds, or operations while either browser is running. It never forces a browser to close.
+
+## Engine modes and Netflix
+
+**Keep Mozilla's Firefox engine (experimental)** retains the original native engine while transplanting Zen's interface archives. Windows verifies that `firefox.exe` and `xul.dll` have valid Mozilla signatures, and the helper checks the engine version and architecture. The saved engine fingerprint is checked again before applying, and recorded for restore checks. An existing Zen engine is rejected rather than silently retained.
+
+In a local Windows x64 comparison with Firefox 159.0 and Zen 1.24b, Netflix returned F7121-1331 with the full-copy method, including in a fresh profile. Playback worked with original Firefox and was reported working in the separate Mozilla-engine/Zen-interface test. Automated checks also confirmed that the latter completes interface startup and loads a page. This is preliminary evidence for that combination, not a guarantee for other releases or DRM services.
+
+Zen's interface also relies on native APIs absent from Mozilla's engine. Tab dragging, compact-mode mouse tracking, library features and mods need further compatibility work; session-startup and missing crash-service errors were observed. The mode remains experimental even when Netflix plays. Sine does not supply these missing native APIs, and its runtime behavior in this mode has not been verified.
+
+If your installed Firefox already contains Zen's `xul.dll`, close both browsers and restore a backup made **before the first full-copy transformation**, then check setup and apply with the keep-engine option selected. **Restore latest backup** may return to another already-modified state after repeated applications; check setup will reject it if the engine is still Zen's. If the original backup is unavailable or Firefox was updated since it was made, reinstall official Firefox before applying. Do not manually mix old engine files with an updated executable.
+
+Unchecking the option uses the original full-copy method. Existing five- and six-argument `Engine.Apply` calls and two-argument `Engine.Inspect` calls retain that legacy behavior. New launcher sessions default to keeping Mozilla's engine; `-KeepFirefoxEngine 0` selects the upstream method. The selected option is preserved through administrator relaunches.
 
 ## Borderless layout
 
@@ -85,7 +97,7 @@ The default backup folder is `%LOCALAPPDATA%\FireZenHelper\Backups`. You can cho
 
 **Restore latest backup** selects the latest applied or interrupted backup for the chosen Firefox folder. Close both browsers first. Restore returns modified files, any borderless defaults file and any changed update policy to their saved state, removes files introduced by that operation, and retains unrelated files. Empty created directories can remain. The backup's `manifest.json` records its installation, checksums, status and interrupted-operation progress.
 
-Restore is deliberately blocked if `firefox.exe` has changed since the backup, such as after a Firefox update: old engine files must not be mixed with a newer executable. In that situation, install matching browser versions and reapply, or reinstall standard Firefox. Do not force an old backup into a newly updated installation.
+Restore is deliberately blocked if `firefox.exe` has changed since the backup, such as after a Firefox update: old engine files must not be mixed with a newer executable. A keep-engine backup also requires the retained `xul.dll` to match its saved fingerprint, and never restores that file. Restore later operations first if they changed the engine. Older helper backups remain readable. In the case of a Firefox update, reinstall standard Firefox rather than forcing old engine files into the updated installation.
 
 If an interrupted operation reports that automatic restore could not finish, keep Firefox closed, keep the backup, and retry Restore latest backup. Do not delete backups while an operation or recovery is in progress.
 
@@ -106,4 +118,4 @@ This is an independent helper, not an official Mozilla, Zen or FireZEN release. 
 
 ## Development
 
-Use Windows PowerShell 5.1. Run `./Run-Tests.ps1` to compile the complete helper and exercise 36 temporary-folder checks. The test runner downloads the pinned official Sine packages into the ignored `work/` folder; no third-party JavaScript is executed. See [TESTING.md](TESTING.md).
+Use Windows PowerShell 5.1. Run `./Run-Tests.ps1` to compile the complete helper and exercise 48 temporary-folder checks. The test runner downloads the pinned official Sine packages into the ignored `work/` folder; no third-party JavaScript is executed by those fixture tests. See [TESTING.md](TESTING.md).

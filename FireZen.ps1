@@ -6,6 +6,7 @@ param(
     [string]$BackupRoot = '',
     [int]$PauseUpdates = 0,
     [int]$RemoveBorder = 1,
+    [int]$KeepFirefoxEngine = 1,
     [string]$SineProfilePath = '',
     [int]$SineFireZen = 1,
     [switch]$OpenSineSetup,
@@ -25,7 +26,7 @@ try {
     Add-Type -Path $sourceFiles -ReferencedAssemblies System.Windows.Forms,System.Drawing,System.Web.Extensions,System.Core,System.IO.Compression,System.IO.Compression.FileSystem
     [System.Windows.Forms.Application]::EnableVisualStyles()
     [System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false)
-    $form = New-Object FireZenHelper.MainForm($PSCommandPath, $ZenPath, $FirefoxPath, $BackupRoot, ($PauseUpdates -eq 1), ($RemoveBorder -eq 1), $SineProfilePath, ($SineFireZen -eq 1), [bool]$OpenSineSetup)
+    $form = New-Object FireZenHelper.MainForm($PSCommandPath, $ZenPath, $FirefoxPath, $BackupRoot, ($PauseUpdates -eq 1), ($RemoveBorder -eq 1), ($KeepFirefoxEngine -eq 1), $SineProfilePath, ($SineFireZen -eq 1), [bool]$OpenSineSetup)
     if ($PreviewSine) {
         $form.SaveSinePreview($PreviewPath)
         $form.Dispose()
