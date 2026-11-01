@@ -13,7 +13,7 @@ namespace FireZenHelper
         private readonly Func<string, bool, bool> requestPrivilege;
         private readonly ComboBox profiles = new ComboBox();
         private readonly CheckBox firezen = new CheckBox();
-        private readonly Label status = new Label();
+        private readonly Label status = new Label(), profileReason = new Label();
         private readonly TextBox log = new TextBox();
         private readonly ProgressBar progress = new ProgressBar();
         private readonly TableLayoutPanel layout = new TableLayoutPanel();
@@ -23,6 +23,12 @@ namespace FireZenHelper
         public bool IncludeMod { get { return firezen.Checked; } }
 
         public SineSetupForm(string firefoxPath, string backupRoot, string preferredProfile, bool includeMod, Func<string, bool, bool> privilege)
+            : this(firefoxPath, backupRoot, preferredProfile, includeMod, privilege, SineInstaller.DiscoverProfiles(firefoxPath))
+        {
+        }
+
+        // Discovery can be supplied for read-only UI checks without changing registered profiles.
+        internal SineSetupForm(string firefoxPath, string backupRoot, string preferredProfile, bool includeMod, Func<string, bool, bool> privilege, ProfileDiscovery discovery)
         {
             firefox = Engine.ReadBrowser(firefoxPath, false).Path;
             backups = Path.GetFullPath(backupRoot);
@@ -50,9 +56,10 @@ namespace FireZenHelper
             profiles.Dock = DockStyle.Fill;
             profiles.Margin = new Padding(0, 1, 8, 0);
             profiles.DropDownStyle = ComboBoxStyle.DropDown;
-            foreach (string path in SineInstaller.DetectProfiles(firefox)) profiles.Items.Add(path);
+            foreach (string path in discovery.Profiles) profiles.Items.Add(path);
+            profiles.SelectedIndex = -1;
             if (!String.IsNullOrWhiteSpace(preferredProfile)) profiles.Text = preferredProfile;
-            else if (profiles.Items.Count > 0) profiles.SelectedIndex = 0;
+            else if (!String.IsNullOrWhiteSpace(discovery.RecommendedProfile)) profiles.Text = discovery.RecommendedProfile;
             layout.Controls.Add(profiles, 0, row);
             var browse = MakeButton("Browse...", false);
             browse.Click += delegate {
@@ -60,7 +67,20 @@ namespace FireZenHelper
                     if (dialog.ShowDialog(this) == DialogResult.OK) profiles.Text = dialog.SelectedPath;
             };
             layout.Controls.Add(browse, 1, row);
-            Wide(new Label { Text = "Verify this is your active profile: Firefox > about:support > Profile Folder.", AutoSize = true, Font = new Font("Segoe UI", 9F), Margin = new Padding(0, 0, 0, 13) }, SizeType.AutoSize, 0);
+            profileReason.AutoSize = true;
+            profileReason.MaximumSize = new Size(750, 0);
+            profileReason.Font = new Font("Segoe UI", 9F);
+            profileReason.Margin = new Padding(0, 0, 0, 4);
+            Action explainProfile = delegate {
+                profileReason.Text = String.IsNullOrWhiteSpace(profiles.Text)
+                    || String.Equals(profiles.Text, discovery.RecommendedProfile, StringComparison.OrdinalIgnoreCase)
+                    ? discovery.RecommendationReason
+                    : "Manually chosen profile. Verify it belongs to the Firefox you want to change.";
+            };
+            profiles.TextChanged += delegate { explainProfile(); };
+            explainProfile();
+            Wide(profileReason, SizeType.AutoSize, 0);
+            Wide(new Label { Text = "In that Firefox, open about:support > Profile Folder to verify or find the folder.", AutoSize = true, Font = new Font("Segoe UI", 9F), Margin = new Padding(0, 0, 0, 13) }, SizeType.AutoSize, 0);
             firezen.Text = "Also install the FireZEN visual-fix mod";
             firezen.Checked = includeMod;
             firezen.AutoSize = true;
@@ -107,7 +127,7 @@ namespace FireZenHelper
             };
             actions.Controls.Add(guide);
             Wide(actions, SizeType.Absolute, 45);
-            Wide(new Label { Text = "After installing, restart Firefox normally; the selected profile's startup cache will refresh.\r\nAfter restoring, use Copy Firefox launch and paste into Win+R to refresh caches.", AutoSize = true, Font = new Font("Segoe UI", 9F), Margin = new Padding(0, 4, 0, 0) }, SizeType.AutoSize, 0);
+            Wide(new Label { Text = "Sine appears in Firefox Settings as Sine Mods. It is installed only in the selected profile.\r\nUse Copy Firefox launch, then Win+R and paste, to open that profile with fresh caches.", AutoSize = true, Font = new Font("Segoe UI", 9F), Margin = new Padding(0, 4, 0, 0) }, SizeType.AutoSize, 0);
             log.Text = "No files are changed until you choose Install / repair Sine.\r\nBackup folder: " + Path.Combine(backups, "Sine") + "\r\n";
             FormClosing += delegate(object sender, FormClosingEventArgs e) {
                 if (busy) { e.Cancel = true; MessageBox.Show(this, "Wait for the Sine operation to finish before closing.", "Operation in progress"); }
@@ -145,7 +165,7 @@ namespace FireZenHelper
                     string cache = Path.Combine(backups, "SineDownloads", "2.3.3");
                     SineInstaller.PrepareDownloads(cache, includeMod, report);
                     return SineInstaller.InstallFromPackages(firefox, profile, backups, cache, includeMod, report);
-                }, true);
+                }, true, profile);
             }
             catch (Exception e) { MessageBox.Show(this, e.Message, "Sine setup", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
         }
@@ -159,12 +179,12 @@ namespace FireZenHelper
                 if (backup == null) throw new IOException("No applied Sine backup was found for this Firefox installation and profile.");
                 if (!requestPrivilege(profile, firezen.Checked)) return;
                 if (MessageBox.Show(this, "Restore the Sine loader, engine and mod files changed by this operation?\r\n\r\n" + backup + "\r\n\r\nBrowser history, cookies and passwords are not part of this backup.", "Restore Sine backup", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK) return;
-                RunOperation(delegate(Action<ProgressUpdate> report) { SineInstaller.Restore(backup, firefox, profile, report); return backup; }, false);
+                RunOperation(delegate(Action<ProgressUpdate> report) { SineInstaller.Restore(backup, firefox, profile, report); return backup; }, false, profile);
             }
             catch (Exception e) { MessageBox.Show(this, e.Message, "Restore Sine backup", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
         }
 
-        private void RunOperation(Func<Action<ProgressUpdate>, string> action, bool installing)
+        private void RunOperation(Func<Action<ProgressUpdate>, string> action, bool installing, string profile)
         {
             busy = true;
             foreach (Control c in layout.Controls) if (!(c is Label) && c != log && c != progress) c.Enabled = false;
@@ -185,10 +205,10 @@ namespace FireZenHelper
                 else
                 {
                     progress.Value = 100;
-                    status.Text = installing ? "Sine installed. Restart Firefox to finish." : "Sine restored. Use Copy Firefox launch, then Win+R and paste.";
-                    log.AppendText("Backup: " + (string)e.Result + "\r\n");
+                    status.Text = installing ? "Sine files installed in the selected profile." : "Sine restored. Use Copy Firefox launch, then Win+R and paste.";
+                    log.AppendText("Profile: " + profile + "\r\nBackup: " + (string)e.Result + "\r\n");
                     log.AppendText(installing
-                        ? "Restart Firefox normally. The selected profile's startup cache will refresh automatically. If you previously disabled all Sine mods, enable them in Settings > Sine.\r\n"
+                        ? "Open this profile to finish; its startup cache will refresh. If it differs from Firefox's normal default, use Copy Firefox launch, then Win+R and paste. Find Sine in Settings > Sine Mods; enable mods there if previously disabled.\r\n"
                         : "Use Copy Firefox launch, then Win+R and paste. This starts the restored profile with refreshed caches.\r\n");
                 }
                 worker.Dispose();
@@ -210,7 +230,7 @@ namespace FireZenHelper
 
         public void SavePreview(string path)
         {
-            Show(); PerformLayout(); Application.DoEvents();
+            Show(); PerformLayout(); Refresh(); Application.DoEvents();
             using (var bitmap = new Bitmap(Width, Height)) { DrawToBitmap(bitmap, new Rectangle(0, 0, Width, Height)); bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png); }
             Hide();
         }

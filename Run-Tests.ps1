@@ -24,6 +24,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Browser/borderless fixture tests failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Engine-mode fixture tests failed.' }
 & $powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'tests\Test-CacheRefresh.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Cache-refresh fixture tests failed.' }
+& $powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'tests\Test-ProfileDiscovery.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Profile-discovery fixture tests failed.' }
 & $powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'tests\Test-Sine.ps1') -PackageDirectory $PackageDirectory
 if ($LASTEXITCODE -ne 0) { throw 'Sine fixture tests failed.' }
-Write-Output 'SUCCESS: full compilation, verified packages, and all 60 fixture tests passed.'
+Write-Output 'SUCCESS: full compilation, verified packages, and all 74 fixture tests passed.'

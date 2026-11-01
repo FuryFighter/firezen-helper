@@ -10,6 +10,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Web.Script.Serialization;
+using Microsoft.Win32;
 
 namespace FireZenHelper
 {
@@ -32,6 +33,13 @@ namespace FireZenHelper
         public string Status { get; set; }
         public int TouchedCount { get; set; }
         public List<SineFileRecord> Files { get; set; }
+    }
+
+    public sealed class ProfileDiscovery
+    {
+        public List<string> Profiles { get; set; }
+        public string RecommendedProfile { get; set; }
+        public string RecommendationReason { get; set; }
     }
 
     public static class SineInstaller
@@ -58,34 +66,162 @@ namespace FireZenHelper
 
         public static List<string> DetectProfiles(string firefox)
         {
-            string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), @"Mozilla\Firefox");
-            string ini = Path.Combine(root, "profiles.ini");
-            var profiles = new List<string>();
-            var defaults = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (File.Exists(ini))
+            return DiscoverProfiles(firefox).Profiles;
+        }
+
+        private sealed class ProfileSection
+        {
+            public string Name;
+            public Dictionary<string, string> Values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static List<ProfileSection> ProfileIni(string file)
+        {
+            var result = new List<ProfileSection>();
+            if (!File.Exists(file)) return result;
+            Engine.CheckPath(file);
+            ProfileSection section = null;
+            foreach (string original in File.ReadAllLines(file))
             {
-                var sections = new List<Dictionary<string, string>>();
-                Dictionary<string, string> section = null;
-                foreach (string line in File.ReadAllLines(ini).Select(s => s.Trim()))
+                string line = original.Trim();
+                if (line.Length == 0 || line.StartsWith(";") || line.StartsWith("#")) continue;
+                if (line.StartsWith("[") && line.EndsWith("]"))
                 {
-                    if (line.StartsWith("[")) { section = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase); sections.Add(section); }
-                    else if (section != null && line.IndexOf('=') > 0)
-                    { int at = line.IndexOf('='); section[line.Substring(0, at)] = line.Substring(at + 1); }
+                    section = new ProfileSection { Name = line.Substring(1, line.Length - 2).Trim() };
+                    result.Add(section);
                 }
-                foreach (var item in sections)
+                else if (section != null && line.IndexOf('=') > 0)
                 {
-                    string value, relative;
-                    if (item.TryGetValue("Path", out value))
-                    {
-                        string full = item.TryGetValue("IsRelative", out relative) && relative == "0" ? value : Path.Combine(root, value.Replace('/', '\\'));
-                        if (Directory.Exists(full)) profiles.Add(Path.GetFullPath(full));
-                    }
-                    if (item.TryGetValue("Default", out value) && value != "1" && value != "0")
-                        defaults.Add(Path.GetFullPath(Path.IsPathRooted(value) ? value : Path.Combine(root, value.Replace('/', '\\'))));
+                    int at = line.IndexOf('=');
+                    section.Values[line.Substring(0, at).Trim()] = line.Substring(at + 1).Trim();
                 }
             }
-            // Registered profiles only; background-task and abandoned folders are not guessed.
-            return profiles.Distinct(StringComparer.OrdinalIgnoreCase).OrderByDescending(p => defaults.Contains(p)).ThenBy(p => p, StringComparer.OrdinalIgnoreCase).ToList();
+            return result;
+        }
+
+        private static string ProfileValue(ProfileSection section, string key)
+        {
+            string value;
+            return section != null && section.Values.TryGetValue(key, out value) ? value : null;
+        }
+
+        private static string ProfileFolder(string root, string value, bool absoluteOnly = false)
+        {
+            if (String.IsNullOrWhiteSpace(value)) return null;
+            try
+            {
+                value = value.Replace('/', '\\');
+                if (absoluteOnly && !Path.IsPathRooted(value)) return null;
+                string full = Path.GetFullPath(Path.IsPathRooted(value) ? value : Path.Combine(root, value));
+                return full.Length > Path.GetPathRoot(full).Length ? full.TrimEnd('\\') : full;
+            }
+            catch (ArgumentException) { return null; }
+            catch (NotSupportedException) { return null; }
+            catch (PathTooLongException) { return null; }
+        }
+
+        private static string RegisteredInstallHash(string firefox)
+        {
+            // Mozilla's Windows installer records the same installation identity
+            // used by the per-install profile mapping. No registry values are changed.
+            foreach (RegistryHive hive in new[] { RegistryHive.CurrentUser, RegistryHive.LocalMachine })
+            foreach (RegistryView view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
+            {
+                try
+                {
+                    using (RegistryKey basis = RegistryKey.OpenBaseKey(hive, view))
+                    using (RegistryKey key = basis.OpenSubKey(@"SOFTWARE\Mozilla\Firefox\TaskBarIDs"))
+                    {
+                        string value = key == null ? null : key.GetValue(firefox) as string;
+                        if (!String.IsNullOrEmpty(value) && Regex.IsMatch(value, "^[a-fA-F0-9]{1,16}$")) return value.ToUpperInvariant();
+                    }
+                }
+                catch (System.Security.SecurityException) { }
+                catch (UnauthorizedAccessException) { }
+                catch (IOException) { }
+            }
+            return null;
+        }
+
+        public static ProfileDiscovery DiscoverProfiles(string firefox)
+        {
+            firefox = Engine.NormalizeFolder(firefox);
+            string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), @"Mozilla\Firefox");
+            return DiscoverProfiles(firefox, root, RegisteredInstallHash(firefox));
+        }
+
+        // Explicit inputs also permit deterministic tests without reading a user's
+        // registry or profile registration. Discovery never changes profiles/defaults.
+        public static ProfileDiscovery DiscoverProfiles(string firefox, string profileRoot, string installHash)
+        {
+            firefox = Engine.NormalizeFolder(firefox);
+            string root = Path.GetFullPath(profileRoot);
+            List<ProfileSection> sections = ProfileIni(Path.Combine(root, "profiles.ini"));
+            var profiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (ProfileSection section in sections.Where(s => Regex.IsMatch(s.Name, "^Profile[0-9]+$", RegexOptions.IgnoreCase)))
+            {
+                string path = ProfileFolder(root, ProfileValue(section, "Path"), ProfileValue(section, "IsRelative") == "0");
+                if (path == null || !Directory.Exists(path)) continue;
+                try
+                {
+                    Engine.CheckPath(path);
+                    if (File.Exists(Engine.Inside(path, "prefs.js")) || File.Exists(Engine.Inside(path, "compatibility.ini"))) profiles.Add(path);
+                }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+            var installSections = sections.Where(s => s.Name.StartsWith("Install", StringComparison.OrdinalIgnoreCase)).ToList();
+            // Firefox imports installs.ini only for the older profiles.ini format.
+            ProfileSection general = sections.LastOrDefault(s => s.Name.Equals("General", StringComparison.OrdinalIgnoreCase));
+            if (ProfileValue(general, "Version") == null)
+                foreach (ProfileSection legacy in ProfileIni(Path.Combine(root, "installs.ini")))
+                {
+                    string name = "Install" + legacy.Name;
+                    if (!installSections.Any(s => s.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+                        installSections.Add(new ProfileSection { Name = name, Values = legacy.Values });
+                }
+            var result = new ProfileDiscovery {
+                Profiles = profiles.OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToList(),
+                RecommendationReason = "No matching default was identified for this Firefox installation. Choose its active profile from about:support."
+            };
+            ProfileSection selected = String.IsNullOrWhiteSpace(installHash) ? null : installSections.LastOrDefault(s => s.Name.Equals("Install" + installHash.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (selected != null)
+            {
+                string mapped = ProfileFolder(root, ProfileValue(selected, "Default"));
+                if (mapped != null && profiles.Contains(mapped))
+                {
+                    result.RecommendedProfile = mapped;
+                    result.RecommendationReason = "Default profile for the selected Firefox installation.";
+                }
+                else result.RecommendationReason = "This Firefox installation's registered default is missing or uninitialized. Start Firefox once, or select its active profile manually.";
+            }
+            else
+            {
+                var owned = new List<string>();
+                foreach (string profile in profiles)
+                {
+                    try
+                    {
+                        ProfileSection compatibility = ProfileIni(Engine.Inside(profile, "compatibility.ini")).LastOrDefault(s => s.Name.Equals("Compatibility", StringComparison.OrdinalIgnoreCase));
+                        string platform = ProfileFolder(root, ProfileValue(compatibility, "LastPlatformDir"), true);
+                        string app = ProfileFolder(root, ProfileValue(compatibility, "LastAppDir"), true);
+                        if ((platform != null && platform.Equals(firefox, StringComparison.OrdinalIgnoreCase)) ||
+                            (platform == null && app != null && app.Equals(Path.Combine(firefox, "browser"), StringComparison.OrdinalIgnoreCase))) owned.Add(profile);
+                    }
+                    catch (IOException) { }
+                    catch (UnauthorizedAccessException) { }
+                }
+                var defaults = new HashSet<string>(installSections.Select(s => ProfileFolder(root, ProfileValue(s, "Default"))).Where(p => p != null), StringComparer.OrdinalIgnoreCase);
+                var candidates = owned.Count == 1 ? owned : owned.Where(defaults.Contains).ToList();
+                if (candidates.Count == 1)
+                {
+                    result.RecommendedProfile = candidates[0];
+                    result.RecommendationReason = "Last used by the selected Firefox installation. Confirm this is the active profile in about:support.";
+                }
+                else if (owned.Count > 1) result.RecommendationReason = "Several profiles were used by this Firefox installation. Select the active one shown in about:support.";
+            }
+            result.Profiles = result.Profiles.OrderByDescending(p => String.Equals(p, result.RecommendedProfile, StringComparison.OrdinalIgnoreCase)).ThenBy(p => p, StringComparer.OrdinalIgnoreCase).ToList();
+            return result;
         }
 
         public static string ValidateProfile(string profile)

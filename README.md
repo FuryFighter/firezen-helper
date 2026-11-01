@@ -42,7 +42,7 @@ Before replacing files, the app stages the source and saves every destination fi
 
 In a local Windows x64 comparison with Firefox 159.0 and Zen 1.24b, Netflix returned F7121-1331 with the full-copy method, including in a fresh profile. Playback worked with original Firefox and was reported working in the separate Mozilla-engine/Zen-interface test. Automated checks also confirmed that the latter completes interface startup and loads a page. This is preliminary evidence for that combination, not a guarantee for other releases or DRM services.
 
-Zen's interface also relies on native APIs absent from Mozilla's engine. Tab dragging, compact-mode mouse tracking, library features and mods need further compatibility work; session-startup and missing crash-service errors were observed. The mode remains experimental even when Netflix plays. Sine does not supply these missing native APIs, and its runtime behavior in this mode has not been verified.
+Zen's interface also relies on native APIs absent from Mozilla's engine. Tab dragging, compact-mode mouse tracking, library features and mods need further compatibility work; session-startup and missing crash-service errors were observed. The mode remains experimental even when Netflix plays. Sine does not supply these missing native APIs. Its pinned loader and Sine Mods settings page have been verified in a separate fresh-profile runtime test, but that does not establish compatibility for every mod or native Zen feature.
 
 If your installed Firefox already contains Zen's `xul.dll`, close both browsers and restore a backup made **before the first full-copy transformation**, then check setup and apply with the keep-engine option selected. **Restore latest backup** may return to another already-modified state after repeated applications; check setup will reject it if the engine is still Zen's. If the original backup is unavailable or Firefox was updated since it was made, reinstall official Firefox before applying. Do not manually mix old engine files with an updated executable.
 
@@ -79,11 +79,11 @@ Unchecking the option leaves an existing helper defaults file in place. To undo 
 The helper now automates [Sine's documented ZIP installation method](https://github.com/sineorg/docs/blob/main/src/installation.md):
 
 1. Select the Firefox installation in the main window and click **Sine Mods**.
-2. Check the detected **Firefox profile**. Select another from the list, paste its path, or use Browse. Firefox's `about:support` page shows the active Profile Folder. Start Firefox once before installing Sine if it has never created a profile.
+2. Check the recommended **Firefox profile** and the explanation below it. The helper matches the selected installation to its own registered default, rather than choosing another installation's default. If no exact default is available, it can recommend a unique profile last used by that installation, with a request to confirm it. Ambiguous or stale mappings leave the choice blank. Select another initialized registered profile from the list, paste its path, or use Browse. Firefox's `about:support` page shows the active Profile Folder. Start Firefox once before installing Sine if it has never created a profile.
 3. Leave **Also install the FireZEN visual-fix mod** checked to install `CosmoCreeper/FireZen` along with Sine. Uncheck it to install or repair only Sine.
 4. Close Firefox and Zen, then click **Install / repair Sine**. Windows may reopen the helper with administrator access, preserving the chosen profile and option; click Install again and review the destinations.
 5. Wait for the success message, then restart Firefox normally. Its startup cache will refresh automatically. If you selected a different profile from your usual one, use **Copy Firefox launch**, press **Win+R**, paste and press Enter.
-6. Open **Settings > Sine** to manage your mods. If you previously disabled all Sine mods, re-enable them there.
+6. Open **Settings > Sine Mods** to manage your mods. If you previously disabled all Sine mods, re-enable them there. **Zen Mods** is the page built into Zen's interface; that label alone does not show that Sine has loaded.
 
 The helper downloads Sine **2.3.3**, its matching bootloader **0.1.4**, and optionally a pinned FireZEN mod snapshot. Every download must match its recorded SHA-256 fingerprint before installation. Existing valid downloads are reused from `<backup folder>/SineDownloads/2.3.3`. No third-party installer executable is run, and the package does not bundle third-party code.
 
@@ -94,6 +94,10 @@ It also sets `InvalidateCaches=1` under `[Compatibility]` in the selected profil
 Sine operations have a separate verified backup under `<backup folder>/Sine`. **Restore Sine backup** in the Sine window restores the latest applied or interrupted operation for the selected Firefox installation and profile. It restores overwritten files and removes introduced files, including the changed registry and cache flag. **After restoring, use Copy Firefox launch and paste into Win+R** to refresh caches when opening the restored profile. Reinstalling Sine after a Firefox update can repair its loader without repeating the main browser-file transformation.
 
 The tested versions are deliberately pinned; the helper does not silently adopt future installer layouts. Sine's own update and mod-management features remain available inside Firefox. This installation step does not diagnose Netflix sign-in problems or establish DRM compatibility.
+
+If installation reports success but Sine Mods is missing, compare the helper's recorded profile with **about:support > Profile Folder** in the browser you normally open. Earlier helper versions could select the test browser's default while installing the loader into the main Firefox installation. Reopen the updated helper and install or repair Sine in the corrected profile; no profile data needs to be moved. **Copy Firefox launch** in the Sine window opens the explicitly selected profile when pasted into Win+R.
+
+On Windows, discovery reads Mozilla's installation identifier from the selected path's `TaskBarIDs` registration and matches its `[Install...]` mapping in `profiles.ini`. An explicit mapping is authoritative. Legacy `installs.ini` fills missing installation mappings only when the old profile-registration format is in use. For unregistered application copies, compatibility metadata can identify last use; the helper avoids choosing an unrelated profile when the association is uncertain. Discovery never changes profile defaults or the registry.
 
 ## Updates
 
@@ -130,4 +134,4 @@ This is an independent helper, not an official Mozilla, Zen or FireZEN release. 
 
 ## Development
 
-Use Windows PowerShell 5.1. Run `./Run-Tests.ps1` to compile the complete helper and exercise 60 temporary-folder checks. The test runner downloads the pinned official Sine packages into the ignored `work/` folder; no third-party JavaScript is executed by those fixture tests. See [TESTING.md](TESTING.md).
+Use Windows PowerShell 5.1. Run `./Run-Tests.ps1` to compile the complete helper and exercise 74 temporary-folder checks. The test runner downloads the pinned official Sine packages into the ignored `work/` folder; no third-party JavaScript is executed by those fixture tests. See [TESTING.md](TESTING.md).
